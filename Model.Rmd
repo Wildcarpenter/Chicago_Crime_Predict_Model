@@ -53,7 +53,7 @@ PolStation <-
   st_transform('ESRI:102271')%>%
   dplyr::select(DISTRICT, ZIP)
 
-# ABANDONED VEHICLES
+# ABANDONED VEHICLES 2017
 abandonCars <- 
   read.socrata("https://data.cityofchicago.org/Service-Requests/311-Service-Requests-Abandoned-Vehicles/3c9v-pnva") %>%
     # Extract the year from the creation date and filter for the year 2017
@@ -64,8 +64,18 @@ abandonCars <-
     st_transform('ESRI:102271') %>%
     mutate(Legend = "Abandoned_Cars")
 
+#SANITATION 2017
+Sani_data <- 
+  read.csv(file.path("C:/Users/25077/Desktop/MUSA 508_PPA/Chicago_Crime_Predict_Model/Chicago_Crime_Predict_Model/Sanitation_Code_Complaints.csv"))
+Sanitation <- 
+  Sani_data %>% 
+  filter(!is.na(Longitude) & !is.na(Latitude)) %>%
+  filter(grepl("2017", `Creation.Date`)) %>%
+  st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326, agr = "constant") %>%
+  st_transform('ESRI:102271')%>%
+  dplyr::select(Creation.Date, Police.District, ZIP.Code)
 
-
+## Crime Data
 
 # Read and process Robbery with Weapon data
 Rob17 <- 
@@ -79,6 +89,19 @@ Rob17 <-
   st_transform('ESRI:102271') %>%  
   distinct() 
 
+# Read and process police districts data
+policeDistricts <- 
+  st_read("https://data.cityofchicago.org/api/geospatial/fthy-xz3r?method=export&format=GeoJSON") %>%
+  st_transform('ESRI:102271') %>%  
+  dplyr::select(District = dist_num)  
+
+# Read and process police beats data
+policeBeats <- 
+  st_read("https://data.cityofchicago.org/api/geospatial/aerh-rz74?method=export&format=GeoJSON") %>%
+  st_transform('ESRI:102271') %>% 
+  dplyr::select(District = beat_num) 
+
+## Boundary Data
 
 # Read and process Chicago boundary data
 chicagoBoundary <- 
@@ -103,23 +126,23 @@ Plotting point data and density
 grid.arrange(
   ncol = 2,
   
-  # Plot 1: Burglaries overlaid on Chicago boundary
+  # Plot 1: Robberies overlaid on Chicago boundary
   ggplot() + 
     geom_sf(data = chicagoBoundary) +  
-    geom_sf(data = burglaries, colour = "red", size = 0.1, show.legend = "point") +  # Overlay burglaries
-    labs(title = "Burglaries, Chicago - 2017") +  # Set plot title
+    geom_sf(data = Rob17, colour = "indianred", size = 0.1, show.legend = "point") +  # Overlay burglaries
+    labs(title = "Robberies, Chicago - 2017") +  # Set plot title
     theme_void(),
   
   # Plot 2: Density of burglaries with contours overlaid on Chicago boundary
   ggplot() + 
     geom_sf(data = chicagoBoundary, fill = "grey40") +  # Add Chicago boundary with grey fill
-    stat_density2d(data = data.frame(st_coordinates(burglaries)),  # Compute 2D kernel density estimate
+    stat_density2d(data = data.frame(st_coordinates(Rob17)),  # Compute 2D kernel density estimate
                    aes(X, Y, fill = ..level.., alpha = ..level..),  # Define aesthetics for density contours
                    size = 0.01, bins = 40, geom = 'polygon') +  # Set size and number of bins for contours
     scale_fill_viridis() +  # Use Viridis color scale for fill
     scale_alpha(range = c(0.00, 0.35), guide = FALSE) +  # Set transparency range for contours
-    labs(title = "Density of Burglaries") +  # Set plot title
-    theme_void() + theme(legend.position = "none")  # Use a blank theme and remove legend
+    labs(title = "Density of Robberies") + 
+    theme_void() + theme(legend.position = "none")
 )
 
 ```
@@ -154,18 +177,18 @@ st_make_grid(chicagoBoundary,
 ```{r spatialjoin}
 ## add a value of 1 to each crime, sum them with aggregate
 crime_net <- 
-  dplyr::select(burglaries) %>% 
-  mutate(countBurglaries = 1) %>% 
+  dplyr::select(Rob17) %>% 
+  mutate(countRob = 1) %>% 
   aggregate(., fishnet, sum) %>%
-  mutate(countBurglaries = replace_na(countBurglaries, 0),
+  mutate(countRob = replace_na(countRob, 0),
          uniqueID = 1:n(),
          cvID = sample(round(nrow(fishnet) / 24), 
                        size=nrow(fishnet), replace = TRUE))
 
 ggplot() +
-  geom_sf(data = crime_net, aes(fill = countBurglaries), color = NA) +
-  scale_fill_viridis("Count of Burglaries") +
-  labs(title = "Count of Burglaires for the fishnet") +
+  geom_sf(data = crime_net, aes(fill = countRob), color = NA) +
+  scale_fill_viridis("Count of Robberies") +
+  labs(title = "Count of Robberies for the fishnet") +
   theme_void()
 
 ```
@@ -175,119 +198,39 @@ kernel density
 
 ## Modeling Spatial Features
 
-> What features would be helpful in predicting the location of burglaries?
->
-> What might these features be problematic?
->
-> hint: for all the reasons we learned in class
-
-```{r addpredictor}
-## only pulling a single variable for our model to keep it simple
-## using Socrata again
-# Read the dataset of abandoned vehicle service requests from the City of Chicago
-abandonCars <- 
-  read.socrata("https://data.cityofchicago.org/Service-Requests/311-Service-Requests-Abandoned-Vehicles/3c9v-pnva") %>%
-    # Extract the year from the creation date and filter for the year 2017
-    mutate(year = substr(creation_date, 1, 4)) %>% filter(year == "2017") %>%
-    # Select latitude and longitude columns and remove rows with missing values
-    dplyr::select(Y = latitude, X = longitude) %>%
-    na.omit() %>%
-    # Convert to simple feature (sf) object with geographic coordinates
-    st_as_sf(coords = c("X", "Y"), crs = 4326, agr = "constant") %>%
-    # Transform coordinates to match the coordinate reference system (CRS) of the fishnet
-    st_transform(st_crs(fishnet)) %>%
-    # Add a legend label indicating abandoned cars
-    mutate(Legend = "Abandoned_Cars")
-
-# Read neighborhood boundaries for Chicago and transform to match fishnet CRS
-neighborhoods <- 
-  st_read("https://raw.githubusercontent.com/blackmad/neighborhoods/master/chicago.geojson") %>%
-  st_transform(st_crs(fishnet))
-
-
-```
-
 #### How we aggregate a feature to our fishnet
 
-This is an important chunk of code with some unfamiliar lines. The overall objective is to assign the fishnet ID to each abandoned car point, group the points by fishnet ID and count them per ID, join that count back to the fishnet and then go from a long format to a wide format. We'll step through it:
-
-*   `st_join(fishnet, join=st_within)`
-*       spatially join `abandonCars` points to the `fishnet` polygon they are within by specifying `st_within`. This results in the `Abandoned_Cars` points being given the `uniqueID` of the fishnet grid cell that they are within.
-*   `st_drop_geometry()`
-*       drop the geometry attributes of the joined data so that we can do summaries on it without having to also calculate geometries which would be quite slow.
-*   `group_by(uniqueID, Legend)`
-*       we want to count the number of abandoned cars per fishnet, so we use `group_by` on the unique cell ID. We also include the `Legend` column, which is more useful if you are doing this one more than a single layer.
-*   `summarize(count = n())`
-*       use `summarize` to create a new field called `count` that will be the count of all abandoned cars per fishnet grid cell. The `n()` function returns the number within each group (i.e. `uniqueID`)
-*   `left_join(fishnet, ., by = "uniqueID")`
-*       join that summary back to spatial fishnet by the `uniqueID` field which is in both. Note the use of the `.` "dot operator" which is a stand in for the object being piped into the function (i.e. `left_join()`). We use this because we want the summaries to be the second argument of the join; not the first argument which is the dplyr default.
-*   `spread(Legend, count, fill=0)`
-*       "spread" from long to wide format and make a new column for each value of the `Legend` field. This also is more useful if there are multiple layers in the `Legend` column. Note the use of `fill=0` tells the function to fill in any fishnet cells without an abandoned car with a `0` instead of `NA`.
-*   `dplyr::select(-``<NA>``)`
-*       remove a `<NA>` column that was created because of the `NA` value in the `Legend` column when it was "spread"
-*   `ungroup()`
-*       Finally, ungroup the dataframe.
 
 ```{r jointofishnet}
 
 # Join the abandoned cars data with the fishnet grid based on spatial intersection
-vars_net <- abandonCars %>%  # Start with the abandoned cars data
-  st_join(fishnet, join = st_within) %>%  # Perform spatial join with fishnet grid, keeping only points within grid cells
-  st_drop_geometry() %>%  # Drop geometry column (no longer needed after joining)
-  group_by(uniqueID, Legend) %>%  # Group data by uniqueID and Legend (e.g., Abandoned_Cars)
-  summarize(count = n()) %>%  # Calculate count of points within each group (grid cell)
-  left_join(fishnet, ., by = "uniqueID") %>%  # Left join fishnet grid with summarized counts, using uniqueID as key
-  spread(Legend, count, fill = 0) %>%  # Spread Legend values (e.g., Abandoned_Cars) into separate columns, filling missing values with 0
-  dplyr::select(-`<NA>`) %>%  # Remove columns with NAs (generated during spreading)
-  ungroup()  # Ungroup the data frame (remove grouping structure)
+vars_net_Car <- abandonCars %>%  
+  st_join(fishnet, join = st_within) %>%  
+  st_drop_geometry() %>% 
+  group_by(uniqueID, Legend) %>%  
+  summarize(count = n()) %>% 
+  left_join(fishnet, ., by = "uniqueID") %>%  
+  spread(Legend, count, fill = 0) %>%  
+  dplyr::select(-`<NA>`) %>%  #
+  ungroup() 
 
-
-```
-
-## Nearest Neighbor Feature
-
-This code calculates the nearest neighbors (NN) of abandoned cars to the centroids of fishnet grid cells. It first defines two convenience aliases st_c and st_coid for st_coordinates and st_centroid functions, respectively, to reduce the length of function names. Then, it creates a new column named Abandoned_Cars.nn in the vars_net dataframe using a custom nn_function. This function finds the nearest neighbors of the centroids of fishnet grid cells to the abandoned car locations, considering the 3 closest neighbors (k = 3).
-
-```{r knn}
+# KNN
 # Convenience aliases to reduce the length of function names
 st_c    <- st_coordinates  # Alias for st_coordinates function
 st_coid <- st_centroid     # Alias for st_centroid function
 
-# Create nearest neighbor (NN) relationship from abandoned cars data to fishnet grid cells
-vars_net3 <- vars_net %>%  # Start with the summarized variables data
-    mutate(Abandoned_Cars.nn = nn_function(  # Create a new column for nearest neighbor information
-        st_c(st_coid(vars_net)),  # Calculate centroids of fishnet grid cells
-        st_c(abandonCars),         # Get coordinates of abandoned cars
-        k = 3                      # Number of nearest neighbors to find
-    ))
 
-vars_net5 <- vars_net %>%  # Start with the summarized variables data
+vars_net5 <- vars_net_Car %>%  # Start with the summarized variables data
     mutate(Abandoned_Cars.nn = nn_function(  # Create a new column for nearest neighbor information
-        st_c(st_coid(vars_net)),  # Calculate centroids of fishnet grid cells
+        st_c(st_coid(vars_net_Car)),  # Calculate centroids of fishnet grid cells
         st_c(abandonCars),         # Get coordinates of abandoned cars
         k = 5                      # Number of nearest neighbors to find
     ))
 
-```
-
-> What changes if we make `k` a different number?
-
-```{r vizNN}
-## Visualize the NN feature
-vars_net3.long.nn <- 
-  dplyr::select(vars_net, ends_with(".nn")) %>%
-    gather(Variable, value, -geometry)
-
+# Visualize the nn
 vars_net5.long.nn <- 
   dplyr::select(vars_net5, ends_with(".nn")) %>%
     gather(Variable, value, -geometry)
-
-## compare the different k.
-ggplot() +
-      geom_sf(data = vars_net3.long.nn, aes(fill=value), colour=NA) +
-      scale_fill_viridis(name="NN3 Distance") +
-      labs(title="Abandoned Car NN3 Distance") +
-      theme_void()
 
 ggplot() +
       geom_sf(data = vars_net5.long.nn, aes(fill=value), colour=NA) +
@@ -296,6 +239,9 @@ ggplot() +
       theme_void()
 ```
 
+
+
+
 ## Join NN feature to our fishnet
 
 Since the counts were aggregated to each cell by `uniqueID` we can use that to join the counts to the fishnet.
@@ -303,7 +249,7 @@ Since the counts were aggregated to each cell by `uniqueID` we can use that to j
 ```{r}
 ## important to drop the geometry from joining features
 final_net <-
-  left_join(crime_net, st_drop_geometry(vars_net), by="uniqueID") 
+  left_join(crime_net, st_drop_geometry(vars_net_Car), by="uniqueID") 
 
 ```
 
@@ -311,7 +257,6 @@ final_net <-
 
 Using spatial joins to join *centroids* of fishnets to polygon for neighborhoods and districts.
 
-> What issues arise when we try to join polygons to polygons in space?
 
 ```{r}
 
@@ -324,23 +269,14 @@ final_net <-
       st_sf() %>%
   na.omit()
 
-# for live demo
-mapview::mapview(final_net, zcol = "District")
 ```
 
 ## Local Moran's I for fishnet grid cells
 
-using {spdep} package to to build neighborhood weights and list to calculate local Moran's I.
 
-Note that the code here is *different* than in the book - it has been updated to keep up with changes in packages.
-
-> What is the difference between local and global Moran's I?
-
-A little in depth version of the chunk below can be found:
-
-Mendez C. (2020). Spatial autocorrelation analysis in R. R Studio/RPubs. Available at <https://rpubs.com/quarcs-lab/spatial-autocorrelation>
 
 ```{r}
+
 ## generates warnings from PROJ issues
 ## {spdep} to make polygon to neighborhoods... 
 final_net.nb <- poly2nb(as_Spatial(final_net), queen=TRUE)
@@ -348,10 +284,9 @@ final_net.nb <- poly2nb(as_Spatial(final_net), queen=TRUE)
 final_net.weights <- nb2listw(final_net.nb, style="W", zero.policy=TRUE)
 
 print(final_net.weights, zero.policy=TRUE)
-```
 
-```{r}
-## see ?localmoran
+
+# Local Moran
 local_morans <- localmoran(final_net$Abandoned_Cars, final_net.weights, zero.policy=TRUE) %>% 
   as.data.frame()
 
@@ -367,14 +302,15 @@ final_net.localMorans <-
   
 ```
 
-### Plotting local Moran's I results
 
-This is a complex code chunk - it's a loop which builds ggplots of local Moran's for each of your `vars`
+### Visualize local Moran's I results
 
-> What does a significant hot spot tell us about the distribution of burglaries?
+*Identify Hot Spots Area*
+using Local Moran's I, P value to identify the significance
+Significant_Hotspots more directly shows the hot spots area, where abandoned cars concentrated.
 
 ```{r fig.width=10, fig.height=4}
-## This is just for plotting
+
 vars <- unique(final_net.localMorans$Variable)
 varList <- list()
 
@@ -387,11 +323,9 @@ for(i in vars){
       labs(title=i) +
       theme_void() + theme(legend.position="bottom")}
 
-do.call(grid.arrange,c(varList, ncol = 4, top = "Local Morans I statistics, Burglary"))
+do.call(grid.arrange,c(varList, ncol = 4, top = "Local Morans I statistics, Abandoned Cars"))
 ```
 
-low p-value: more significant
-p_value map
 
 ## Distance to Hot spot
 
@@ -401,21 +335,14 @@ Using NN distance to a hot spot location
 # generates warning from NN
 final_net <- final_net %>% 
   mutate(abandoned.isSig = 
-           ifelse(local_morans[,5] <= 0.001, 1, 0)) %>%
+           ifelse(local_morans[,5] <= 0.001, 1, 0)) %>% # identify hotspot area
   mutate(abandoned.isSig.dist = 
            nn_function(st_c(st_coid(final_net)),
                        st_c(st_coid(filter(final_net, 
-                                           abandoned.isSig == 1))), 
-                       k = 1))
+                                           abandoned.isSig == 1))), # dist to the hotspot
+                       k = 3))
 
-## What does k = 1 represent?
-```
 
-> What does `k = 1` above mean in terms of measuring nearest neighbors?
-
-### Plot NN distance to hot spot
-
-```{r}
 ggplot() +
       geom_sf(data = final_net, aes(fill=abandoned.isSig.dist), colour=NA) +
       scale_fill_viridis(name="NN Distance") +

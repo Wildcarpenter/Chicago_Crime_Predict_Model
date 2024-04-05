@@ -595,6 +595,8 @@ can view the "crossValidation" function first
 ```{r results='hide'}
 
 ## define the variables we want
+reg.vars <- c("Abandoned_Cars.nn", "Sanitation.nn", "PolStation.nn")
+
 reg.ss.vars <- c("Abandoned_Cars.nn", "abandoned.isSig.dist", "Sanitation.nn", "Sani.isSig.dist", "PolStation.nn", "Station.isSig.dist")
 
 reg.cv <- crossValidate(
@@ -605,27 +607,29 @@ reg.cv <- crossValidate(
     dplyr::select(cvID = cvID, countRob, Prediction, geometry)
 
 reg.ss.cv <- crossValidate(
-  dataset = final_net,
+  dataset = final_net3,
   id = "cvID",
-  dependentVariable = "countBurglaries",
+  dependentVariable = "countRob",
   indVariables = reg.ss.vars) %>%
-    dplyr::select(cvID = cvID, countBurglaries, Prediction, geometry)
+    dplyr::select(cvID = cvID, countRob, Prediction, geometry)
   
 reg.spatialCV <- crossValidate(
-  dataset = final_net,
+  dataset = final_net3,
   id = "name",
-  dependentVariable = "countBurglaries",
+  dependentVariable = "countRob",
   indVariables = reg.vars) %>%
-    dplyr::select(cvID = name, countBurglaries, Prediction, geometry)
+    dplyr::select(cvID = name, countRob, Prediction, geometry)
 
 reg.ss.spatialCV <- crossValidate(
-  dataset = final_net,
+  dataset = final_net3,
   id = "name",
-  dependentVariable = "countBurglaries",
+  dependentVariable = "countRob",
   indVariables = reg.ss.vars) %>%
-    dplyr::select(cvID = name, countBurglaries, Prediction, geometry)
+    dplyr::select(cvID = name, countRob, Prediction, geometry)
 
 ```
+
+
 ## Cross Validation & K Fold MAE Comparison
 
 ```{r fig.width=10, fig.height=4}
@@ -633,12 +637,18 @@ reg.ss.spatialCV <- crossValidate(
 
 reg.summary <- 
   rbind(
+    mutate(reg.cv,           Error = Prediction - countRob,
+                             Regression = "Random k-fold CV: Just Risk Factors"),
+                             
     mutate(reg.ss.cv,        Error = Prediction - countRob,
                              Regression = "Random k-fold CV: Spatial Process"),
-                        
+    
+    mutate(reg.spatialCV,    Error = Prediction - countRob,
+                             Regression = "Spatial LOGO-CV: Just Risk Factors"),
+                             
     mutate(reg.ss.spatialCV, Error = Prediction - countRob,
                              Regression = "Spatial LOGO-CV: Spatial Process")) %>%
-    st_sf() 
+    st_sf()
   
 error_by_reg_and_fold <- 
   reg.summary %>%
@@ -664,11 +674,44 @@ st_drop_geometry(error_by_reg_and_fold) %>%
               SD_MAE = round(sd(MAE), 2)) %>%
   kable() %>%
     kable_styling("striped", full_width = F) %>%
-    row_spec(1, color = "black", background = "lightgrey") %>%
-    row_spec(2, color = "black", background = "lightgrey") 
+    row_spec(2, color = "black", background = "lightgrey") %>%
+    row_spec(4, color = "black", background = "lightgrey") 
 ```
 
+## Racial Context
 
+A table of raw errors by race context for a random k-fold vs. spatial cross validation regression.
+
+```{r Racial}
+
+tracts18 <- 
+  get_acs(geography = "tract", variables = c("B01001_001E","B01001A_001E"), 
+          year = 2018, state=17, county=031, geometry=T) %>%
+  st_transform('ESRI:102271')  %>% 
+  dplyr::select(variable, estimate, GEOID) %>%
+  spread(variable, estimate) %>%
+  rename(TotalPop = B01001_001,
+         NumberWhites = B01001A_001) %>%
+  mutate(percentWhite = NumberWhites / TotalPop,
+         raceContext = ifelse(percentWhite > .5, "Majority_White", "Majority_Non_White")) %>%
+  .[neighborhoods,]
+
+reg.summary %>% 
+  filter(str_detect(Regression, "LOGO")) %>%
+    st_centroid() %>%
+    st_join(tracts18) %>%
+    na.omit() %>%
+      st_drop_geometry() %>%
+      group_by(Regression, raceContext) %>%
+      summarize(mean.Error = mean(Error, na.rm = T)) %>%
+      spread(raceContext, mean.Error) %>%
+      kable(caption = "Mean Error by neighborhood racial context") %>%
+        kable_styling("striped", full_width = F)  
+
+```
+
+## Distribution of MAE
+## MAE by Neighborhood
 
 ```{r}
 # calculate errors by NEIGHBORHOOD
@@ -693,10 +736,9 @@ error_by_reg_and_fold %>%
 ```
 
 
+## Comparison with 2018 Robbery Data
 
-## Get 2018 crime data
-
-Let's see how our model performed relative to KD on the following year's data.
+1.Get 2018 crime data
 
 ```{r}
 Rob18 <- 
@@ -711,6 +753,9 @@ Rob18 <-
   st_transform('ESRI:102271') %>% 
   distinct() %>%
   .[fishnet,]
+
+burg_ppp <- as.ppp(st_coordinates(Rob17), W = st_bbox(final_net3))
+burg_KD.1000 <- density.ppp(burg_ppp, 1000)
 
 burg_KDE_sum <- as.data.frame(burg_KD.1000) %>%
   st_as_sf(coords = c("x", "y"), crs = st_crs(final_net3)) %>%
@@ -735,7 +780,7 @@ burg_KDE_sf <- burg_KDE_sum %>%
   dplyr::select(label, Risk_Category, robCount)
 ```
 
-Note that this is different from the book, where we pull a model out of a list of models we've created. For your homework, you'll be creating multiple models.
+
 
 ```{r}
 ml_breaks <- classIntervals(reg.ss.spatialCV$Prediction, 
@@ -755,11 +800,7 @@ burg_risk_sf <-
       dplyr::select(Rob18) %>% mutate(robCount = 1), ., sum) %>%
       mutate(robCount = replace_na(robCount, 0))) %>%
   dplyr::select(label,Risk_Category, robCount)
-```
 
-We don't do quite as well because we don't have very many features, but still pretty good.
-
-```{r}
 rbind(burg_KDE_sf, burg_risk_sf) %>%
   na.omit() %>%
   gather(Variable, Value, -label, -Risk_Category, -geometry) %>%
@@ -771,10 +812,7 @@ rbind(burg_KDE_sf, burg_risk_sf) %>%
     labs(title="Comparison of Kernel Density and Risk Predictions",
          subtitle="2017 Robberies risk predictions; 2018 Robberies") +
     mapTheme(title_size = 14)
-```
-whether result matches with the real-situation.
 
-```{r}
 rbind(burg_KDE_sf, burg_risk_sf) %>%
   st_drop_geometry() %>%
   na.omit() %>%
@@ -793,3 +831,15 @@ rbind(burg_KDE_sf, burg_risk_sf) %>%
   theme_bw() +
       theme(axis.text.x = element_text(angle = 45, vjust = 0.5))
 ```
+
+1st Risk Category: There's a notable discrepancy in the first risk category, with the prediction model significantly underestimating the percentage of robberies that fall into the highest risk category. The spatial map confirms that the model failed to capture the concentration of the highest risk areas.
+
+2nd and 3rd Risk Categories: For the second and third risk categories, the prediction model seems to overestimate the percentage of robberies when compared to the kernel density. This suggests that the model may misclassify some areas into a higher risk category than they actually are. The spatial distribution might show a broader spread of moderate risk than what actually occurred.
+
+4th Risk Category: The predicted and actual data are closely aligned in the fourth risk category, indicating the model's accuracy for lower-middle-risk areas.
+
+5th Risk Category: There's an underestimation in the prediction for the lowest risk category. This underestimation, combined with the overestimation in the second and third categories, may imply that the model is biased towards predicting a higher risk than exists.
+
+The model is conservative in predicting the highest risk areas, which might cause insufficient resource allocation to the most vulnerable spots.There is an over-prediction in the mid-risk categories, which could lead to an over-allocation of resources to areas that do not require as intensive monitoring or intervention.The accuracy in the fourth category suggests that the model has some predictive power and is not uniformly over or underestimating across all categories. The under-prediction in the lowest risk category might not be as critical from a resource allocation perspective, but it still indicates that the model’s threshold for risk is skewed.
+
+The predictive model’s underestimation of the highest risk robbery areas and overestimation of mid-level risks, as shown in the comparison between prediction and kernel density, suggests it's not yet suited for deployment. The spatial maps underscore the urgency for recalibration to accurately target resources, avoid potential biases, and ensure public safety without misdirecting law enforcement efforts. Before considering production use, the model demands rigorous refinement, transparent methodology, and ethical oversight, coupled with an ongoing validation process that adapts to evolving crime patterns and incorporates a broader spectrum of data for enhanced accuracy.

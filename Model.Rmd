@@ -2,19 +2,21 @@
 title: 'Predictive Policing'
 author: "Ziyi Guo"
 date: "04/02/2024"
-output: html_document
+output:
+  html_document:
+    code_folding: show
+    toc: true
+    toc_float: true
 ---
 
 
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
 
-install.packages(RSocrata)
+knitr::opts_chunk$set(warning = FALSE)
 
 library(tidyverse)
 library(sf)
-library(RSocrata)
 library(viridis)
 library(spatstat)
 library(raster)
@@ -32,10 +34,12 @@ source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-L
 
 ```
 
+
 ## Read in Data from Chicago
 
+Read in data related to Chicago's potential risk predictors, such as 311 service requests concerning gun violence, sanitation reports, and abandoned vehicles, as well as information on current policing conditions including police districts, beats, and stations, along with past crime data.
 
-```{r read_data}
+```{r read_data, warning = FALSE, message = FALSE, results='hide'}
 
 ## Potential Predictors
 
@@ -54,16 +58,15 @@ PolStation <-
   dplyr::select(DISTRICT, ZIP)%>%
   mutate(Legend = "Pol_Station")
 
-# ABANDONED VEHICLES 2017
-abandonCars <- 
-  read.socrata("https://data.cityofchicago.org/Service-Requests/311-Service-Requests-Abandoned-Vehicles/3c9v-pnva") %>%
-    # Extract the year from the creation date and filter for the year 2017
-    mutate(year = substr(creation_date, 1, 4)) %>% filter(year == "2017") %>%
-    dplyr::select(Y = latitude, X = longitude) %>%
-    na.omit() %>%
-    st_as_sf(coords = c("X", "Y"), crs = 4326, agr = "constant") %>%
-    st_transform('ESRI:102271') %>%
-    mutate(Legend = "Abandoned_Cars")
+# Assuming Creation.Date is a character string or factor
+abandonCars <- read.csv(file.path("C:/Users/25077/Desktop/MUSA 508_PPA/Chicago_Crime_Predict_Model/Chicago_Crime_Predict_Model/Abandoned_Vehicles.csv")) %>%
+  dplyr::select(Latitude, Longitude, Creation.Date ) %>%
+  filter(!is.na(Longitude) & !is.na(Latitude)) %>%
+  filter(grepl("2017", `Creation.Date`)) %>%
+  st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326, agr = "constant") %>%
+  st_transform('ESRI:102271')%>%
+  mutate(Legend = "AbandonedCars")
+
 
 #SANITATION 2017
 Sani_data <- 
@@ -79,9 +82,10 @@ Sanitation <-
 
 ## Crime Data
 
+#
 # Read and process Robbery with Weapon data
 Rob17 <- 
-  read.socrata("https://data.cityofchicago.org/Public-Safety/Crimes-2017/d62x-nvdr") %>% 
+  read.csv(file.path("C:/Users/25077/Desktop/MUSA 508_PPA/Chicago_Crime_Predict_Model/Chicago_Crime_Predict_Model/Crimes_-_2017.csv")) %>%
   filter(Primary.Type == "ROBBERY" & Description == "ARMED: HANDGUN") %>%  
   mutate(x = gsub("[()]", "", Location)) %>% 
   separate(x, into = c("Y", "X"), sep = ",") %>%  
@@ -117,15 +121,15 @@ neighborhoods <-
 
 ```
 
-## 1.Visualizing crime point data
+## Visualizing crime point data
 
 
-```{r}
+```{r, warning = FALSE, message = FALSE, results='hide'}
   
 # Robberies overlaid on Chicago boundary
   ggplot() + 
     geom_sf(data = chicagoBoundary, fill = "lightgrey", colour = NA) +  
-    geom_sf(data = Rob17, colour = "indianred", size = 0.1, show.legend = "point") +  
+    geom_sf(data = Rob17, colour = "blue4", size = 0.1, show.legend = "point") +  
     labs(title = "Robberies, Chicago - 2017") +  # Set plot title
     theme_void()
 
@@ -146,10 +150,11 @@ Technological Changes: Advancements in technology can change the way crimes are 
 Media Influence: Media reporting on crime can influence public perception and reporting behavior. High-profile crimes might lead to increased reporting of similar crimes due to heightened awareness.
 
 
-## 2. Crime joined to fishnet grid
+## Crime joined to fishnet grid
 
+Generate a 500ft x 500ft fishnet grid and allocate the crime data to each cell within the grid.
 
-```{r fishnet}
+```{r fishnet, warning = FALSE, message = FALSE, results='hide'}
 
 # Create fishnet
 fishnet <- 
@@ -178,15 +183,18 @@ ggplot() +
 
 ```
 
+The fishnet crime map helps in identifying hotspots of crime activity and can be an essential tool for urban planning and law enforcement to allocate resources more effectively. The distribution of the color intensities suggests a clustering of higher robbery counts in specific areas, which could warrant further investigation or targeted interventions
 
 
-# Modeling Spatial Features
+## Modeling Spatial Features
 
-## Abandoned Cars
+### Abandoned Cars
 
 1. Abandoned Cars Count and knn
 
-```{r jointofishnet}
+Quantify the number of abandoned vehicles within each grid cell and compute the distance from each cell to the five nearest abandoned vehicles.
+
+```{r jointofishnet1, warning = FALSE, message = FALSE, results='hide'}
 
 # COUNT
 # Join the abandoned cars data with the fishnet grid based on spatial intersection
@@ -242,7 +250,7 @@ local_morans <- localmoran(final_net1$Abandoned_Cars, final_net1.weights, zero.p
 final_net1.localMorans <- 
   cbind(local_morans, as.data.frame(final_net1)) %>% 
   st_sf() %>%
-  dplyr::select(Abandoned_Cars_Count = Abandoned_Cars, 
+  dplyr::select(Abandoned_Cars_Count = AbandonedCars, 
                 Local_Morans_I = Ii, 
                 P_Value = `Pr(z != E(Ii))`) %>%
   mutate(Significant_Hotspots = ifelse(P_Value <= 0.001, 1, 0)) %>%
@@ -251,13 +259,11 @@ final_net1.localMorans <-
 ```
 
 
-3.  Visualize local Moran's I results
+2.  Visualize local Moran's I results
 
-*Identify Hot Spots Area*
-using Local Moran's I, P value to identify the significance
-Significant_Hotspots more directly shows the hot spots area, where abandoned cars concentrated.
+Leverage Local Moran's I and associated P-values to ascertain the significance of hot spots, pinpointing areas with a high concentration of abandoned cars. The "Significant_Hotspots" map explicitly illuminates these areas, providing a clear visualization of where abandoned vehicles are most prevalent.
 
-```{r fig.width=10, fig.height=4}
+```{r fig.width=10, fig.height=4, warning = FALSE, message = FALSE, results='hide'}
 
 vars <- unique(final_net1.localMorans$Variable)
 varList <- list()
@@ -274,10 +280,11 @@ for(i in vars){
 do.call(grid.arrange,c(varList, ncol = 4, top = "Local Morans I statistics, Abandoned Cars"))
 ```
 
+The hotspot areas, as indicated by the analysis, are predominantly situated in the southern region of the city.
 
-4. Distance to Hot spot
+3. Distance to Hot spot
 
-```{r}
+```{r, warning = FALSE, message = FALSE, results='hide'}
 # generates warning from NN
 
 final_net1 <- final_net1 %>% 
@@ -297,12 +304,15 @@ ggplot() +
       theme_void()
 ```
 
+Consistent with the hotspot distribution, the northern part of the city exhibits longer distances to abandoned cars, while the southern areas, identified as hotspots, have relatively shorter distances to these vehicles.
 
-## Sanitation
+### Sanitation
 
 1. Sanitation Count and knn
 
-```{r jointofishnet}
+Quantify the number of the sanitation reports within each grid cell and compute the distance from each cell to the five nearest sanitation reports.
+
+```{r jointofishnet2, warning = FALSE, message = FALSE, results='hide'}
 
 # Join the Sanitation Count data with the fishnet grid based on spatial intersection
 # a new spatial grid - Sanitation Count
@@ -379,7 +389,7 @@ final_net2.localMorans <-
 using Local Moran's I, P value to identify the significance
 Significant_Hotspots more directly shows the hot spots area, where abandoned cars concentrated.
 
-```{r fig.width=10, fig.height=4}
+```{r fig.width=10, fig.height=4, warning = FALSE, message = FALSE, results='hide'}
 
 vars <- unique(final_net2.localMorans$Variable)
 varList <- list()
@@ -396,10 +406,11 @@ for(i in vars){
 do.call(grid.arrange,c(varList, ncol = 4, top = "Local Morans I statistics, Sanitation Status"))
 ```
 
+to identify the sanitation hotspot areas,
 
 4. Distance to Hot spot
 
-```{r}
+```{r, warning = FALSE, message = FALSE, results='hide'}
 # generates warning from NN
 final_net2 <- final_net2 %>% 
   mutate(Sani.isSig = 
@@ -417,11 +428,11 @@ ggplot() +
       labs(title="Sanitation NN Distance") +
       theme_void()
 ```
-## Police Station
+### Police Station
 
 1. police station Count and knn
 
-```{r jointofishnet}
+```{r jointofishnet3, warning = FALSE, message = FALSE, results='hide'}
 
 # Join the Sanitation Count data with the fishnet grid based on spatial intersection
 # a new spatial grid - Sanitation Count
@@ -469,7 +480,7 @@ final_net3 <-
 
 2. Local Moran's I
 
-```{r}
+```{r, warning = FALSE, message = FALSE, results='hide'}
 
 ## used to generate the weights of neighborhoods
 ## prerequisite for Local Moran
@@ -502,7 +513,7 @@ final_net3.localMorans <-
 using Local Moran's I, P value to identify the significance
 Significant_Hotspots more directly shows the hot spots area, where abandoned cars concentrated.
 
-```{r fig.width=10, fig.height=4}
+```{r fig.width=10, fig.height=4, warning = FALSE, message = FALSE, results='hide'}
 
 vars <- unique(final_net3.localMorans$Variable)
 varList <- list()
@@ -522,7 +533,7 @@ do.call(grid.arrange,c(varList, ncol = 4, top = "Local Morans I statistics, Poli
 
 4. Distance to Hot spot
 
-```{r}
+```{r, warning = FALSE, message = FALSE, results='hide'}
 # generates warning from NN
 final_net3 <- final_net3 %>% 
   mutate(Station.isSig = 
@@ -541,9 +552,9 @@ ggplot() +
       theme_void()
 ```
 
-## Combine with neighborhoods and policing districts
+### Combine with neighborhoods and policing districts
 
-```{r}
+```{r, warning = FALSE, message = FALSE, results='hide'}
 final_net3 <-
   st_centroid(final_net3) %>%
     st_join(dplyr::select(neighborhoods, name), by = "uniqueID") %>%
@@ -554,9 +565,9 @@ final_net3 <-
   na.omit()
 ```
 
-## Variables Correlation
+### Variables Correlation
 
-```{r}
+```{r, warning = FALSE, message = FALSE, results='hide'}
 
 final_net3_long <- pivot_longer(
   data = final_net3,
@@ -568,31 +579,43 @@ final_net3_long <- pivot_longer(
 # Create the plot
 ggplot(final_net3_long, aes(x = Value, y = countRob)) +
   geom_point(size = 0.3) +
-  geom_smooth(method = "lm", se = FALSE, color = "indianred2") +
+  geom_smooth(method = "lm", se = FALSE, color = "skyblue2") +
   facet_wrap(~Variable, ncol = 3, scales = "free") +
   labs(title = "Correlation with countRob") +
   theme_minimal()
 
 ```
 
-## Histogram of dependent variables (Robbery count)
+abandoned.isSig.dist: This scatter plot compares the count of robberies (countRob) with the distance to significant clusters of abandoned cars. The trend line suggests that as the distance to significant clusters of abandoned cars increases, the count of robberies tends to decrease, albeit with a wide spread of data points that indicate variability in the correlation.
 
-```{r}
+Abandoned_Cars.nn: This scatter plot shows the relationship between the count of robberies and the nearest neighbor count of abandoned cars. The trend seems to suggest a slight decrease in robberies as the number of nearby abandoned cars increases, but again with a wide distribution of points.
+
+Sani.isSig.dist: The count of robberies is plotted against the distance to significant clusters of sanitation reports. The trend line indicates a negative relationship, where robbery counts decrease as the distance to sanitation issues increases, which might suggest that areas with more sanitation reports also see more robberies.
+
+Sanitation.nn: This plot shows the count of robberies against the nearest neighbor count of sanitation reports. The downward trend line suggests that higher sanitation report counts may be associated with lower robbery counts, but the dispersion of the data points is quite broad.
+
+PolStation.nn: This shows the relationship between the count of robberies and the count of nearest neighbors to police stations. The trend line is downward, indicating that as the proximity to police stations increases (i.e., more police stations in the vicinity), the count of robberies tends to decrease.
+
+Station.isSig.dist: Finally, this scatter plot correlates the count of robberies with the distance to significant police station locations. The trend line indicates a slight decrease in the count of robberies as the distance to police stations increases, which may imply that closer proximity to police stations is associated with fewer robberies.
+
+### Histogram of dependent variables (Robbery count)
+
+```{r, warning = FALSE, message = FALSE, results='hide'}
 ggplot(final_net3, aes(x = countRob)) + 
-  geom_histogram(binwidth = 1, fill = "indianred2", color = "white") +
+  geom_histogram(binwidth = 1, fill = "skyblue4", color = "white") +
   labs(title = "Histogram of countRob",
        x = "countRob",
        y = "Frequency") +
   theme_minimal()
 ```
+From the chart, it's clear that the majority of data points have a low count of robberies, with the first bin being the most populated, indicating a high frequency of areas with few or no reported robberies. As the count of robberies increases, the frequency drastically decreases, showing that higher robbery counts are less common. The concentration of data in the lower count range could suggest that while robberies do occur across the grid, they are generally less frequent and there are fewer areas with high robbery rates. 
 
 
 ## Modeling and CV
 
-Leave One Group Out CV on spatial features
-can view the "crossValidation" function first
+Construct a regression model incorporating the identified variables.
 
-```{r results='hide'}
+```{r, warning = FALSE, message = FALSE, results='hide'}
 
 ## define the variables we want
 reg.vars <- c("Abandoned_Cars.nn", "Sanitation.nn", "PolStation.nn")
@@ -630,9 +653,9 @@ reg.ss.spatialCV <- crossValidate(
 ```
 
 
-## Cross Validation & K Fold MAE Comparison
+### Cross Validation & K Fold MAE Comparison
 
-```{r fig.width=10, fig.height=4}
+```{r fig.width=10, fig.height=4, warning = FALSE, message = FALSE, results='hide'}
 
 
 reg.summary <- 
@@ -660,14 +683,21 @@ error_by_reg_and_fold <-
 
 error_by_reg_and_fold %>%
   ggplot(aes(MAE)) + 
-    geom_histogram(bins = 30, colour="white", fill = "indianred2") +
+    geom_histogram(bins = 30, colour="white", fill = "lightskyblue4") +
     facet_wrap(~Regression) +  
     geom_vline(xintercept = 0) + scale_x_continuous(breaks = seq(0, 8, by = 1)) + 
     labs(title="Distribution of MAE", subtitle = "k-fold cross validation vs. LOGO-CV",
          x="Mean Absolute Error", y="Count") +
     plotTheme()
 ```
-```{r}
+
+Models validated with Spatial LOGO-CV exhibit more variability in MAE compared to those validated with random k-fold CV, which is expected as LOGO-CV accounts for spatial autocorrelation by leaving out clustered observations.
+
+The 'Spatial Process' model generally shows a more concentrated MAE distribution, suggesting that including spatial relationships improves the consistency of the model’s predictive accuracy.
+
+The comparison between cross-validation methods for each type of model indicates that the way in which data is partitioned for validation (randomly or spatially) can significantly affect the evaluation of model performance, with spatial methods likely offering a more realistic assessment for spatial data.
+
+```{r, warning = FALSE, message = FALSE}
 st_drop_geometry(error_by_reg_and_fold) %>%
   group_by(Regression) %>% 
     summarize(Mean_MAE = round(mean(MAE), 2),
@@ -678,11 +708,21 @@ st_drop_geometry(error_by_reg_and_fold) %>%
     row_spec(4, color = "black", background = "lightgrey") 
 ```
 
-## Racial Context
+Random k-fold CV: Just Risk Factors: The model using only risk factors has a mean MAE of 0.39 and a standard deviation of 0.30. This suggests moderate predictive error with some variability across the k-folds.
+
+Random k-fold CV: Spatial Process: The spatial process model under random k-fold CV has a similar mean MAE of 0.38 but a slightly higher standard deviation of 0.31. This indicates a comparable predictive performance to the risk factors model with a little more inconsistency between folds.
+
+Spatial LOGO-CV: Just Risk Factors: When spatial considerations are factored into CV, the mean MAE for the risk factors model jumps to 0.95 with a high standard deviation of 0.83. This indicates less predictive accuracy and more variability when the spatial structure of the data is accounted for.
+
+Spatial LOGO-CV: Spatial Process: The spatial process model with spatial LOGO-CV has a mean MAE of 0.92 and a standard deviation of 0.81, which is slightly better than the risk factors model in mean error but with a similarly high level of variability.
+
+From these results, it can be inferred that when spatial autocorrelation is considered during model validation (Spatial LOGO-CV), the predictive error increases compared to random cross-validation. This suggests that the spatial structure of the data is significant and that models that do not account for this may be overestimating their predictive performance. It also demonstrates that spatial process models are slightly more robust to spatial validation methods than models considering only risk factors, as indicated by the marginally lower mean MAE. The high standard deviations in the spatial CV models indicate a large variability in the errors, reflecting the complex nature of spatial data that might not be captured entirely by the model.
+
+### Racial Context
 
 A table of raw errors by race context for a random k-fold vs. spatial cross validation regression.
 
-```{r Racial}
+```{r Racial, warning = FALSE, message = FALSE, results='hide'}
 
 tracts18 <- 
   get_acs(geography = "tract", variables = c("B01001_001E","B01001A_001E"), 
@@ -695,7 +735,9 @@ tracts18 <-
   mutate(percentWhite = NumberWhites / TotalPop,
          raceContext = ifelse(percentWhite > .5, "Majority_White", "Majority_Non_White")) %>%
   .[neighborhoods,]
+```
 
+```{r Racial2, warning = FALSE, message = FALSE}
 reg.summary %>% 
   filter(str_detect(Regression, "LOGO")) %>%
     st_centroid() %>%
@@ -710,10 +752,19 @@ reg.summary %>%
 
 ```
 
-## Distribution of MAE
-## MAE by Neighborhood
+Spatial LOGO-CV: Just Risk Factors:
+Majority_Non_White' has a negative coefficient of approximately -0.6318, suggesting that an increase in the non-white majority population is associated with a decrease in the response variable, which could be the count of incidents or a similar metric, in this model.
+'Majority_White' has a positive coefficient of approximately 0.6869, indicating that an increase in the white majority population is associated with an increase in the response variable.
 
-```{r}
+Spatial LOGO-CV: Spatial Process:
+'Majority_Non_White' has a negative coefficient of approximately -0.5967, which is still negative but slightly less so compared to the Just Risk Factors model.
+'Majority_White' has a positive coefficient of approximately 0.6433, which is positive and also slightly lower than in the Just Risk Factors model.
+
+These coefficients suggest that there is a racial demographic relationship to the response variable being modeled, with non-white majority areas negatively associated and white majority areas positively associated with the outcome. However, these relationships are less pronounced in the Spatial Process model compared to the Just Risk Factors model. This could imply that including spatial processes in the model partially mitigates the apparent influence of these demographic factors.
+
+### Distribution of MAE and MAE by Neighborhood
+
+```{r, warning = FALSE, message = FALSE, results='hide'}
 # calculate errors by NEIGHBORHOOD
 error_by_reg_and_fold <- 
   reg.ss.spatialCV %>%
@@ -729,20 +780,27 @@ error_by_reg_and_fold %>%
 ## plot histogram of OOF (out of fold) errors
 error_by_reg_and_fold %>%
   ggplot(aes(MAE)) + 
-    geom_histogram(bins = 30, colour="white", fill = "indianred2") +
+    geom_histogram(bins = 30, colour="white", fill = "lightskyblue4") +
   scale_x_continuous(breaks = seq(0, 11, by = 1)) + 
     labs(title="Distribution of MAE", subtitle = "LOGO-CV",
          x="Mean Absolute Error", y="Count") 
 ```
 
+The majority of MAE values are between 0 and 1, indicating that for most of the validation groups, the average error between the predicted and actual values is less than 1 unit. This could be considered a good predictive performance, depending on the specific context and scale of the response variable.
 
-## Comparison with 2018 Robbery Data
+The frequency of MAE values decreases as the error increases. There are fewer instances where the model's predictions were off by more than 1 unit.
 
-1.Get 2018 crime data
+The histogram shows a right-skewed distribution, with most of the data clustered on the lower end of MAE values and the tail stretching towards the higher MAE values.
 
-```{r}
+There is a long tail of higher MAE values, although these occur less frequently. This suggests there may be outliers or specific instances where the model performs poorly.
+
+
+### Comparison with 2018 Robbery Data
+
+
+```{r, warning = FALSE, message = FALSE, results='hide'}
 Rob18 <- 
-  read.socrata("https://data.cityofchicago.org/Public-Safety/Crimes-2018/3i3m-jwuy") %>% 
+  read.csv(file.path("C:/Users/25077/Desktop/MUSA 508_PPA/Chicago_Crime_Predict_Model/Chicago_Crime_Predict_Model/Crimes_-_2018.csv")) %>% 
   filter(Primary.Type == "ROBBERY" & Description == "ARMED: HANDGUN") %>%
   mutate(x = gsub("[()]", "", Location)) %>%
   separate(x,into= c("Y","X"), sep=",") %>%
@@ -778,11 +836,7 @@ burg_KDE_sf <- burg_KDE_sum %>%
       dplyr::select(Rob18) %>% mutate(robCount = 1), ., sum) %>%
     mutate(robCount = replace_na(robCount, 0))) %>%
   dplyr::select(label, Risk_Category, robCount)
-```
 
-
-
-```{r}
 ml_breaks <- classIntervals(reg.ss.spatialCV$Prediction, 
                              n = 5, "fisher")
 burg_risk_sf <-
@@ -812,7 +866,18 @@ rbind(burg_KDE_sf, burg_risk_sf) %>%
     labs(title="Comparison of Kernel Density and Risk Predictions",
          subtitle="2017 Robberies risk predictions; 2018 Robberies") +
     mapTheme(title_size = 14)
+```
 
+
+1st Risk Category: There's a notable discrepancy in the first risk category, with the prediction model significantly underestimating the percentage of robberies that fall into the highest risk category. The spatial map confirms that the model failed to capture the concentration of the highest risk areas.
+
+2nd and 3rd Risk Categories: For the second and third risk categories, the prediction model seems to overestimate the percentage of robberies when compared to the kernel density. This suggests that the model may misclassify some areas into a higher risk category than they actually are. The spatial distribution might show a broader spread of moderate risk than what actually occurred.
+
+4th Risk Category: The predicted and actual data are closely aligned in the fourth risk category, indicating the model's accuracy for lower-middle-risk areas.
+
+5th Risk Category: There's an underestimation in the prediction for the lowest risk category. This underestimation, combined with the overestimation in the second and third categories, may imply that the model is biased towards predicting a higher risk than exists.
+
+```{r, warning = FALSE, message = FALSE, results='hide'}
 rbind(burg_KDE_sf, burg_risk_sf) %>%
   st_drop_geometry() %>%
   na.omit() %>%
@@ -824,7 +889,7 @@ rbind(burg_KDE_sf, burg_risk_sf) %>%
   mutate(Pcnt_of_test_set_crimes = countRob / sum(countRob)) %>%
     ggplot(aes(Risk_Category,Pcnt_of_test_set_crimes)) +
       geom_bar(aes(fill=label), position="dodge", stat="identity") +
-      scale_fill_viridis(discrete = TRUE, name = "Model") +
+      scale_fill_manual(values=c("khaki", "lightskyblue3")) +
       labs(title = "Risk prediction vs. Kernel density, 2018 Robberies",
            y = "% of Test Set Robberies (per model)",
            x = "Risk Category") +
@@ -832,13 +897,6 @@ rbind(burg_KDE_sf, burg_risk_sf) %>%
       theme(axis.text.x = element_text(angle = 45, vjust = 0.5))
 ```
 
-1st Risk Category: There's a notable discrepancy in the first risk category, with the prediction model significantly underestimating the percentage of robberies that fall into the highest risk category. The spatial map confirms that the model failed to capture the concentration of the highest risk areas.
-
-2nd and 3rd Risk Categories: For the second and third risk categories, the prediction model seems to overestimate the percentage of robberies when compared to the kernel density. This suggests that the model may misclassify some areas into a higher risk category than they actually are. The spatial distribution might show a broader spread of moderate risk than what actually occurred.
-
-4th Risk Category: The predicted and actual data are closely aligned in the fourth risk category, indicating the model's accuracy for lower-middle-risk areas.
-
-5th Risk Category: There's an underestimation in the prediction for the lowest risk category. This underestimation, combined with the overestimation in the second and third categories, may imply that the model is biased towards predicting a higher risk than exists.
 
 The model is conservative in predicting the highest risk areas, which might cause insufficient resource allocation to the most vulnerable spots.There is an over-prediction in the mid-risk categories, which could lead to an over-allocation of resources to areas that do not require as intensive monitoring or intervention.The accuracy in the fourth category suggests that the model has some predictive power and is not uniformly over or underestimating across all categories. The under-prediction in the lowest risk category might not be as critical from a resource allocation perspective, but it still indicates that the model’s threshold for risk is skewed.
 
